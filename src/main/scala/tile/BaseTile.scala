@@ -64,6 +64,11 @@ trait HasTileParameters {
   def vpnBits: Int = vaddrBits - pgIdxBits
   def ppnBits: Int = paddrBits - pgIdxBits
   def pgLevels: Int = p(PgLevels)
+  def minPgLevels: Int = {
+    val res = xLen match { case 32 => 2; case 64 => 3 }
+    require(pgLevels >= res)
+    res
+  }
   def asIdBits: Int = p(ASIdBits)
   def vpnBitsExtended: Int = vpnBits + (vaddrBits < xLen).toInt
   def vaddrBitsExtended: Int = vpnBitsExtended + pgIdxBits
