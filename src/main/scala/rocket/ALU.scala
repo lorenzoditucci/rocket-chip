@@ -56,12 +56,14 @@ class ALU(implicit p: Parameters) extends CoreModule()(p) {
     val out = UInt(OUTPUT, xLen)
     val adder_out = UInt(OUTPUT, xLen)
     val cmp_out = Bool(OUTPUT)
+    val lorenzo = UInt(OUTPUT, 64.W)
   }
 
+  io.lorenzo := 37.U & 1.U
   // ADD, SUB
   val in2_inv = Mux(isSub(io.fn), ~io.in2, io.in2)
-  val in1_xor_in2 = io.in1 ^ in2_inv
-  io.adder_out := io.in1 + in2_inv + isSub(io.fn)
+  val in1_xor_in2 = io.in1 ^ in2_inv.asUInt()
+  io.adder_out := io.in1 + in2_inv.asUInt() + isSub(io.fn)
 
   // SLT, SLTU
   val slt =

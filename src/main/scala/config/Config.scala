@@ -2,6 +2,10 @@
 
 package freechips.rocketchip.config
 
+import freechips.rocketchip.diplomacy.LazyModule
+import freechips.rocketchip.subsystem.RocketTilesKey
+import freechips.rocketchip.tile.{AccumulatorExample, BuildRoCC, OpcodeSet}
+
 abstract class Field[T] private (val default: Option[T])
 {
   def this() = this(None)
@@ -83,3 +87,4 @@ private class MapParameters(map: Map[Any, Any]) extends Parameters {
     if (g.isDefined) Some(g.get.asInstanceOf[T]) else tail.find(pname, site)
   }
 }
+

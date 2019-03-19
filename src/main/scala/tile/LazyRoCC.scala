@@ -3,14 +3,17 @@
 
 package freechips.rocketchip.tile
 
-import Chisel._
+import java.util
 
+import Chisel._
+import chisel3.printf
 import freechips.rocketchip.config._
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.rocket._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util.InOrderArbiter
+import sun.security.util.DerValue
 
 case object BuildRoCC extends Field[Seq[Parameters => LazyRoCC]](Nil)
 
@@ -361,4 +364,192 @@ class RoccCommandRouter(opcodes: Seq[OpcodeSet])(implicit p: Parameters)
 
   assert(PopCount(cmdReadys) <= UInt(1),
     "Custom opcode matched for more than one accelerator")
+}
+
+class  AccumulatorExample2(opcodes: OpcodeSet, val n: Int = 4)(implicit p: Parameters) extends LazyRoCC(opcodes) {
+  override lazy val module = new AccumulatorExampleModuleImp2(this)
+}
+
+class AccumulatorExampleModuleImp2(outer: AccumulatorExample2)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
+  with HasCoreParameters {
+  printf("Chiamato?? \n\n\n\n")
+  val regfile = Mem(outer.n, UInt(width = xLen))
+  val busy = Reg(init = Vec.fill(outer.n){Bool(false)})
+
+  val cmd = Queue(io.cmd)
+  val funct = cmd.bits.inst.funct
+  val addr = cmd.bits.rs2(log2Up(outer.n)-1,0)
+  val doWrite = funct === UInt(0)
+  val doRead = funct === UInt(1)
+  val doLoad = funct === UInt(2)
+  val doAccum = funct === UInt(3)
+  val doTuccio = funct === UInt(4)
+
+  val memRespTag = io.mem.resp.bits.tag(log2Up(outer.n)-1,0)
+
+  // datapath
+  val addend = cmd.bits.rs1
+  val accum = regfile(addr)
+  val wdata = Mux(doWrite, addend, accum + addend)
+  val wdataTuccio = Mux(doTuccio, accum + 100.U, 0.U)
+
+  when (cmd.fire() && (doWrite || doAccum)) {
+    regfile(addr) := wdata
+  }
+
+  when(cmd.fire() && doTuccio) {
+    regfile(addr) := wdataTuccio
+  }
+
+  when (io.mem.resp.valid) {
+    regfile(memRespTag) := io.mem.resp.bits.data
+    busy(memRespTag) := Bool(false)
+  }
+
+  // control
+  when (io.mem.req.fire()) {
+    busy(addr) := Bool(true)
+  }
+
+  val doResp = cmd.bits.inst.xd
+  val stallReg = busy(addr)
+  val stallLoad = doLoad && !io.mem.req.ready
+  val stallResp = doResp && !io.resp.ready
+
+  cmd.ready := !stallReg && !stallLoad && !stallResp
+  // command resolved if no stalls AND not issuing a load that will need a request
+
+  // PROC RESPONSE INTERFACE
+  io.resp.valid := cmd.valid && doResp && !stallReg && !stallLoad
+  // valid response if valid command, need a response, and no stalls
+  io.resp.bits.rd := cmd.bits.inst.rd
+  // Must respond with the appropriate tag or undefined behavior
+  io.resp.bits.data := accum
+  // Semantics is to always send out prior accumulator register value
+
+  io.busy := cmd.valid || busy.reduce(_||_)
+  // Be busy when have pending memory requests or committed possibility of pending requests
+  io.interrupt := Bool(false)
+  // Set this true to trigger an interrupt on the processor (please refer to supervisor documentation)
+
+  // MEMORY REQUEST INTERFACE
+  io.mem.req.valid := cmd.valid && doLoad && !stallReg && !stallResp
+  io.mem.req.bits.addr := addend
+  io.mem.req.bits.tag := addr
+  io.mem.req.bits.cmd := M_XRD // perform a load (M_XWR for stores)
+  io.mem.req.bits.typ := MT_D // D = 8 bytes, W = 4, H = 2, B = 1
+  io.mem.req.bits.data := Bits(0) // we're not performing any stores...
+  io.mem.req.bits.phys := Bool(false)
+}
+
+class DummyExample(opcodes: OpcodeSet) (implicit p:Parameters) extends LazyRoCC(opcodes){
+  override lazy val module = new DummyExampleModuleImp_2(this)
+}
+
+class DummyExampleModuleImp_2(outer: DummyExample)(implicit p:Parameters) extends LazyRoCCModuleImp(outer)
+  with HasCoreParameters {
+
+  val cmd = Queue(io.cmd)
+  val funct = cmd.bits.inst.funct
+  val needResponse = cmd.bits.inst.xd
+  val hasrs1 = cmd.bits.inst.xs1
+  val hasrs2 = cmd.bits.inst.xs2
+  val address = cmd.bits.rs1
+  val tag = cmd.bits.rs2
+  val dest = cmd.bits.inst.rd
+
+  val regAddress = Reg(init = address)
+  val regTagIn = Reg(init = tag)
+  val regNeedResp = Reg(init = needResponse)
+
+  val receivedTags = Mem(10, UInt(1.W))
+
+
+  val STORE_FIXED_VALUE_COMMAND = 0.U
+  val FIXED_VALUE = 32.U
+
+
+  val regBusy = Reg(init = false.B)
+  io.busy := regBusy
+
+  val sIdle :: sStore :: sWaitResponse :: sCheckResponse :: Nil = Enum(UInt(), 4)
+  val state = Reg(init = sIdle)
+
+  val regData = Reg(init = io.mem.resp.bits.data)
+  val regTag = Reg(init = io.mem.resp.bits.tag)
+
+  def driveDefaults() {
+    io.mem.req.valid := false.B
+    io.mem.req.bits.addr := 0.U
+    io.mem.req.bits.tag := 0.U
+    io.mem.req.bits.cmd := 0.U
+    io.mem.req.bits.typ := 0.U
+    io.mem.req.bits.phys := false.B
+    io.mem.req.bits.data := 0.U
+
+    io.resp.valid := false.B
+    io.resp.bits.data := 0.U
+    io.resp.bits.rd := 0.U
+  }
+
+  cmd.ready := true.B
+  driveDefaults()
+
+  when(state === sIdle){
+    cmd.ready := true.B
+    when(cmd.fire){
+      //check instruction
+      when(funct === STORE_FIXED_VALUE_COMMAND){
+        regBusy := true.B
+        regAddress := address
+        regTagIn := tag
+        regNeedResp := needResponse
+        state := sStore
+      }
+    }
+  }.elsewhen(state === sStore){
+    //request to memory
+    io.mem.req.bits.addr := regAddress
+    io.mem.req.bits.tag := regTagIn
+    //io.mem.req.bits.cmd := M_XWR
+    io.mem.req.bits.cmd := UInt("b00001")
+    //io.mem.req.bits.typ := MT_D
+    io.mem.req.bits.typ := UInt("b011")
+    io.mem.req.bits.phys := false.B
+    io.mem.req.bits.data := FIXED_VALUE
+    io.mem.req.valid := true.B
+    when(io.mem.req.fire()){
+      //request performed, now wait for response
+      state := sWaitResponse
+      //regBusy := false.B //todo remove this
+    }
+  }.elsewhen(state === sWaitResponse){
+    when(io.mem.resp.valid === true.B){
+      state := sCheckResponse
+      regBusy := false.B
+    }
+  }.elsewhen(state === sCheckResponse){
+    when(regNeedResp === true.B){
+      io.resp.valid := true.B
+      io.resp.bits.rd := regTag
+      io.resp.bits.data := regData
+      when(io.resp.fire){
+        regNeedResp := false.B
+        state := sIdle
+      }
+    }.otherwise{
+      state := sIdle
+    }
+  }
+
+
+  when(io.mem.resp.valid === true.B){
+    //response Received
+    receivedTags(io.mem.resp.bits.tag) := true.B
+    regData := io.mem.resp.bits.data
+    regTag := io.mem.resp.bits.tag
+  }
+
+
+
 }
